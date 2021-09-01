@@ -33,15 +33,13 @@ def create_table(conn, create_table_sql):
 sql_create_users_table = """ CREATE TABLE IF NOT EXISTS users (
                                     id integer PRIMARY KEY,
                                     name text NOT NULL,
-                                    employee_id integer NOT NULL,
-                                    company_id integer NOT NULL,
                                     encoding integer NOT NULL
                                     );"""
 
 def main():
 
-    create_db(r"encoded_names.db")
-    database = r"encoded_names.db"
+    create_db(r"unknown_names.db")
+    database = r"unknown_names.db"
     conn = create_connection(database)
 
     if conn is not None:
