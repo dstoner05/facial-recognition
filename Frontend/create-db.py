@@ -38,8 +38,8 @@ sql_create_users_table = """ CREATE TABLE IF NOT EXISTS users (
 
 def main():
 
-    create_db(r"unknown_names.db")
-    database = r"unknown_names.db"
+    create_db(r"encoded_names.db")
+    database = r"encoded_names.db"
     conn = create_connection(database)
 
     if conn is not None:
