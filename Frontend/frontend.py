@@ -42,21 +42,67 @@ nothingdetected = 0
 missingcount = 0
 
 def camera():
-    global frame, kill, newframecount
+    global frame, kill, newframecount, brightness, blurryphoto
+    blurlist = []
+    brightness = 0
+    blurcount = 0
+    blurryphoto = 0
+
 
     while True:
         if kill:
             break
         ret, frame = video_capture.read()
         frame1 = copy.deepcopy(frame)
+        small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
         cv2.imshow('Video', frame1)
         newframecount += 1
+        convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
+        value = convert[:,:,1]
+        value1 = cv2.mean(value)[0]
+
+        #Brightness check
+        if value1 < 50:
+            brightness += 1
+            print("Too Dark\n")
+            continue
+        elif value1 > 200:
+            brightness += 1
+            print("Too Bright\n")
+            continue
         
+        #blur check
+        blur = cv2.Laplacian(small_frame, cv2.CV_64F).var()
+        # print(blur)
+        if blurcount == 0:
+            blurcount += 1
+            blurlist.append(blur)
+            average = sum(blurlist)/len(blurlist)
+            continue
+
+        else:
+
+            if blur < (average-50):
+                blurryphoto += 1
+                blurlist.append(blur)
+                average = sum(blurlist)/len(blurlist)
+                # print(average)
+                print("photo is too blurry\n")
+                continue
+
+            else:
+                blurlist.append(blur)
+                average = sum(blurlist)/len(blurlist)
+                # print(average)
+                pass
+            
+            if len(blurlist) > 150:
+                blurlist = []
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
 def select_users():
-    global face_names, kill, newframecount, frame_counter, brightness, blurryphoto, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface
+    global face_names, kill, newframecount, frame_counter, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface
     count = 0
     frame_counter = 0
     facenotstraight = 0
@@ -64,15 +110,12 @@ def select_users():
     matchedface = 0
     unmatchedface = 0
     savedface = 0
-    brightness = 0
-    blurcount = 0
-    blurryphoto = 0
     nothingdetected = 0
     missingcount = 0
     face_locations = []
     face_encodings = []
     face_names = []
-    blurlist = []
+    
     process_this_frame = True
 
     def create_connection(encoded_names):
@@ -108,47 +151,7 @@ def select_users():
         
         if process_this_frame:
             
-            convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
-            value = convert[:,:,1]
-            value1 = cv2.mean(value)[0]
 
-            #Brightness check
-            if value1 < 50:
-                brightness += 1
-                print("Too Dark\n")
-                continue
-            elif value1 > 200:
-                brightness += 1
-                print("Too Bright\n")
-                continue
-            
-            #blur check
-            blur = cv2.Laplacian(small_frame, cv2.CV_64F).var()
-            # print(blur)
-            if blurcount == 0:
-                blurcount += 1
-                blurlist.append(blur)
-                average = sum(blurlist)/len(blurlist)
-                continue
-
-            else:
-
-                if blur < (average-50):
-                    blurryphoto += 1
-                    blurlist.append(blur)
-                    average = sum(blurlist)/len(blurlist)
-                    # print(average)
-                    print("photo is too blurry\n")
-                    continue
-
-                else:
-                    blurlist.append(blur)
-                    average = sum(blurlist)/len(blurlist)
-                    # print(average)
-                    pass
-            
-            if len(blurlist) > 150:
-                blurlist = []
 
             detector = dlib.get_frontal_face_detector()
             dets1, scores, idx = detector.run(small_frame, 1, -1)
@@ -170,7 +173,7 @@ def select_users():
                 if len(dets) == 1:
                     if scores[0] <= 1.4:
                         lowconfidence += 1
-                        print(scores)
+                        # print(scores)
                         print("Our face confidence is low\n")
                         # print(scores)
                         # print(scores[0])
@@ -309,12 +312,14 @@ def sysquit():
     print("Number of saved faces (should be at most # of ppl in frame)", savedface)
     t1.join()
     t2.join()
+    t4.join()
     sys.exit
 
 
 t1 = threading.Thread(target=select_users)
 t2 = threading.Thread(target=camera)
 t3 = threading.Thread(target=sysquit)
+t4 = threading.Thread(target=select_users)
 
 def main():
     global t1, t2, t3
@@ -324,7 +329,7 @@ def main():
     t2.start()
     t1.start()
     t3.start()
-    
+    t4.start()
 
 
 if __name__ == '__main__':
