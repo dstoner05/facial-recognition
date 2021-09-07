@@ -4,26 +4,23 @@ import numpy as np
 import sys
 import sqlite3
 import pandas as pd
-import requests
 from PIL import Image 
 from numpy import asarray
 import cv2
-import os
-import base64
-import io
 from numpy import array
-import json
 from autocrop import Cropper
 import dlib
-import time
-import threading
 import copy
+import time
+from multiprocessing import Process, Pipe
+import multiprocessing
 
 kill = False
 
 video_capture = cv2.VideoCapture(0)
 cropper = Cropper()
 
+processes = []
 
 ret, frame = video_capture.read()
 # face_locations = (0,0,0,0)
@@ -41,23 +38,94 @@ blurryphoto = 0
 nothingdetected = 0
 missingcount = 0
 
-def camera():
-    global frame, kill, newframecount, brightness, blurryphoto
+def camera(_myConn, queue):
+    global frame, kill, newframecount
+    newframecount = 0
+    while True:
+        if kill:
+            break
+        video_capture = cv2.VideoCapture(0)
+        ret, frame = video_capture.read()
+        queue.put(frame)
+        # frame1 = copy.deepcopy(frame)
+        # small_frame = cv2.resize(frame1, (0, 0), fx=1, fy=1)
+        cv2.imshow('Video', frame)
+        newframecount += 1
+        if(newframecount ==0):
+            newframecount+=1
+            queue.put(frame)
+        elif(newframecount < (60/len(processes))):
+            newframecount +=1
+        else:
+            newframecount = 0
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+def select_users(_myConn, queue):
+    global face_names, kill, newframecount, frame_counter, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface, brightness, blurryphoto
+    count = 0
+    frame_counter = 0
+    facenotstraight = 0
+    lowconfidence = 0
+    matchedface = 0
+    unmatchedface = 0
+    savedface = 0
+    nothingdetected = 0
+    missingcount = 0
+    face_locations = []
+    face_encodings = []
+    face_names = []
     blurlist = []
     brightness = 0
     blurcount = 0
     blurryphoto = 0
+    process_this_frame = True
 
+    
+
+    def create_connection(encoded_names):
+        conn = None
+        try:
+            conn = sqlite3.connect(encoded_names)
+        except:
+            print("error")
+
+        return conn
+
+    database = r"encoded_names.db"
+    conn = create_connection(database)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users")
+
+    rows = cur.fetchall()
+    known_face_names = []
+    known_face_encodings = []
+    for row in rows:
+        known_face_names.append(row[1])
+        known_face_encodings.append(np.frombuffer(row[2], np.float64))
+
+    
 
     while True:
         if kill:
             break
-        ret, frame = video_capture.read()
-        frame1 = copy.deepcopy(frame)
+        frame_counter += 1
+
+        if not queue.empty():
+            # print(queue.get())
+            frame = queue.get()
+            pass
+        else:
+            time.sleep(.25)
+
         small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
-        cv2.imshow('Video', frame1)
-        newframecount += 1
-        convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
+        rgb_small_frame = small_frame[:, :, ::-1]
+        convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2GRAY)
+        
+        if process_this_frame:
+            
+            convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
         value = convert[:,:,1]
         value1 = cv2.mean(value)[0]
 
@@ -98,64 +166,14 @@ def camera():
             
             if len(blurlist) > 150:
                 blurlist = []
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-def select_users():
-    global face_names, kill, newframecount, frame_counter, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface
-    count = 0
-    frame_counter = 0
-    facenotstraight = 0
-    lowconfidence = 0
-    matchedface = 0
-    unmatchedface = 0
-    savedface = 0
-    nothingdetected = 0
-    missingcount = 0
-    face_locations = []
-    face_encodings = []
-    face_names = []
-    
-    process_this_frame = True
-
-    def create_connection(encoded_names):
-        conn = None
-        try:
-            conn = sqlite3.connect(encoded_names)
-        except:
-            print("error")
-
-        return conn
-
-    database = r"encoded_names.db"
-    conn = create_connection(database)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users")
-
-    rows = cur.fetchall()
-    known_face_names = []
-    known_face_encodings = []
-    for row in rows:
-        known_face_names.append(row[1])
-        known_face_encodings.append(np.frombuffer(row[2], np.float64))
-
-    
-
-    while True:
-        if kill:
-            break
-        frame_counter += 1
-
-        small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
-        rgb_small_frame = small_frame[:, :, ::-1]
-        
-        if process_this_frame:
-            
-
 
             detector = dlib.get_frontal_face_detector()
+            #change -1 to 1 at some point to see how it affects
             dets1, scores, idx = detector.run(small_frame, 1, -1)
             dets = detector(small_frame, 1)
+            for i, d in enumerate(dets1):
+                print("Detection {}, score: {}, face_type:{}".format(d, scores[i], idx[i]))
+                # print(type(dets1))
             # print(dets)
             # print(len(dets))
             if idx == []:
@@ -171,7 +189,7 @@ def select_users():
             elif idx[0] == 0:
                 #print("I entered the straight face loop"
                 if len(dets) == 1:
-                    if scores[0] <= 1.4:
+                    if scores[0] <= 1:
                         lowconfidence += 1
                         # print(scores)
                         print("Our face confidence is low\n")
@@ -180,11 +198,11 @@ def select_users():
                         #print(scores[i])
                         continue
                 
-                    elif scores[0] > 1.4:
+                    elif scores[0] > 1:
                         # print(scores[0], "\n")
                         pass
                 elif len(dets) == 2:
-                    if scores[0] and scores[1] <= 1.35:
+                    if scores[0] and scores[1] <= 1:
                         lowconfidence += 1
                         print("Our face confidence is low\n")
                         # print(scores)
@@ -193,11 +211,11 @@ def select_users():
                         #print(scores[i])
                         continue
                 
-                    elif scores[0] and scores[1] > 1.35:
+                    elif scores[0] and scores[1] > 1:
                         # print(scores[0], "\n")
                         pass
                 elif len(dets) == 3:
-                    if scores[0] and scores[1] and scores[2] <= 1.15:
+                    if scores[0] and scores[1] and scores[2] <= 1:
                         lowconfidence += 1
                         print("Our face confidence is low\n")
                         # print(scores)
@@ -207,7 +225,7 @@ def select_users():
                         #print(scores[i])
                         continue
                 
-                    elif scores[0] and scores[1] and scores[2] > 1.15:
+                    elif scores[0] and scores[1] and scores[2] > 1:
                         # print(scores[0], "\n")
                         pass
                 elif len(dets) == 0:
@@ -310,28 +328,61 @@ def sysquit():
     print("Number of matched unknown faces:", unmatchedface)
     print("Here are the frames were missing:", missingcount)
     print("Number of saved faces (should be at most # of ppl in frame)", savedface)
-    t1.join()
-    t2.join()
-    t4.join()
+    # t1.join()
+    # t2.join()
+    # t4.join()
     sys.exit
 
+def startProcs(_count, _childConn, queue):
+    #proc 0 is always camera proc
+    processes.append(Process(target=camera, args=(_childConn, queue, )))
+    processes[0].start()
+    print(str(processes[0].pid) + ' has started. (camera)')
 
-t1 = threading.Thread(target=select_users)
-t2 = threading.Thread(target=camera)
-t3 = threading.Thread(target=sysquit)
-t4 = threading.Thread(target=select_users)
+    for proc in range(1, _count):
+        processes.append(Process(target=select_users, args=(_childConn, queue, )))
+        processes[proc].start()
+        print(str(processes[proc].pid) + ' has started. (processing)')
 
-def main():
+def joinProcs(_count, _parentConn):
+    #join all known threads
+    for proc in range(0, _count):
+            #send message to all child processes to end process loops.
+        _parentConn.send('Done')
+        print(str(processes[proc].pid) + ' has joined.')
+        processes[proc].join()
+
+
+# t1 = threading.Thread(target=select_users)
+# t2 = threading.Thread(target=camera)
+# t3 = threading.Thread(target=sysquit)
+# t4 = threading.Thread(target=select_users)
+
+def main(_procCount = 2):
     global t1, t2, t3
-    
+    queue = multiprocessing.Queue()
+    if _procCount < 2:
+        _procCount = 2
+
+    #create a shared connection pipe for the global kill var
+    parent_conn, child_conn = Pipe()
+
+    #create processes based on input
+    startProcs(_procCount, child_conn, queue)
+
+    #stop processing on user input
+    input('press any key to post stats. \n')
+    joinProcs(_procCount, parent_conn)
+    sysquit()
 
 
-    t2.start()
-    t1.start()
-    t3.start()
-    t4.start()
+    input('press any key to quit... \n')
+    # t2.start()
+    # t1.start()
+    # t3.start()
+    # t4.start()
 
 
 if __name__ == '__main__':
 
-    main()
+    main(2)
