@@ -16,22 +16,6 @@ from multiprocessing import Process, Pipe, Queue
 
 processes = []
 
-# ret, frame = video_capture.read()
-# # face_locations = (0,0,0,0)
-# face_names = ""
-# newframecount = 0
-# frame_counter = 0
-# facenotstraight = 0
-# lowconfidence = 0
-# matchedface = 0
-# unmatchedface = 0
-# savedface = 0
-# brightness = 0
-# blurcount = 0
-# blurryphoto = 0
-# nothingdetected = 0
-# missingcount = 0
-
 
 def startCameraFeed(_myConn, _myQueue, _numProc):
     # define a video capture object
@@ -58,7 +42,7 @@ def startCameraFeed(_myConn, _myQueue, _numProc):
         if(frameCount == 0):
             _myQueue.put(frame)
             frameCount += 1
-        elif(frameCount < (60 / _numProc)):
+        elif frameCount < 20:
             frameCount += 1
         else:
             frameCount = 0
@@ -131,7 +115,7 @@ def processFrame(_myConn, _myQueue):
             # print(_myQueue.get())
             # print('I am processing...')
         else:
-            time.sleep(0.25)
+            time.sleep(0.05)
             continue
 
         small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
@@ -340,7 +324,7 @@ def joinProcs(_count, _parentConn):
             #send message to all child processes to end process loops.
         _parentConn.send('Done')
         print(str(processes[proc].pid) + ' has joined.')
-        processes[proc].join()
+        processes[proc].join(timeout=1)
 
 
 def postStats(frame_counter, brightness, blurryphoto, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface):
@@ -376,9 +360,9 @@ def main(_procCount = 2):
     # postStats()
 
 
-    input('press any key to quit... \n')
-
+    # input('press any key to quit... \n')
+    
 
 if __name__ == '__main__':
     #process count argument (defaults to 2)
-    main(2)
+    main(4)
