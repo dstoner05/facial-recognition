@@ -33,7 +33,8 @@ def create_table(conn, create_table_sql):
 sql_create_users_table = """ CREATE TABLE IF NOT EXISTS users (
                                     id integer PRIMARY KEY,
                                     name text NOT NULL,
-                                    encoding integer NOT NULL
+                                    encoding integer NOT NULL,
+                                    count integer NOT NULL
                                     );"""
 
 def main():

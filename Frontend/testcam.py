@@ -42,7 +42,7 @@ def startCameraFeed(_myConn, _myQueue, _numProc):
         if(frameCount == 0):
             _myQueue.put(frame)
             frameCount += 1
-        elif frameCount < 20:
+        elif frameCount < 30:
             frameCount += 1
         else:
             frameCount = 0
@@ -74,10 +74,14 @@ def processFrame(_myConn, _myQueue):
     face_encodings = []
     face_names = []
     blurlist = []
+    known_face_count = 0
     brightness = 0
     blurcount = 0
     blurryphoto = 0
     process_this_frame = True
+    unknown_face_count = 0
+    known_dict = {}
+    unknown_dict = {}
 
     def create_connection(encoded_names):
         conn = None
@@ -99,10 +103,10 @@ def processFrame(_myConn, _myQueue):
     for row in rows:
         known_face_names.append(row[1])
         known_face_encodings.append(np.frombuffer(row[2], np.float64))
+        known_face_count = 0
 
 
     while True:
-        frame_counter += 1
         #Check if its time to end the job
         if _myConn.poll():
             msg = _myConn.recv()
@@ -112,18 +116,18 @@ def processFrame(_myConn, _myQueue):
         #Check if the queue has a frame to process, otherwize sleep for a bit
         if not _myQueue.empty():
             frame = _myQueue.get()
-            # print(_myQueue.get())
-            # print('I am processing...')
         else:
             time.sleep(0.05)
             continue
+
 
         small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
         rgb_small_frame = small_frame[:, :, ::-1]
         convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2GRAY)
         
+
         if process_this_frame:
-            
+            frame_counter += 1
             convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
             value = convert[:,:,1]
             value1 = cv2.mean(value)[0]
@@ -140,7 +144,6 @@ def processFrame(_myConn, _myQueue):
             
             #blur check
             blur = cv2.Laplacian(small_frame, cv2.CV_64F).var()
-            # print(blur)
             if blurcount == 0:
                 blurcount += 1
                 blurlist.append(blur)
@@ -153,75 +156,49 @@ def processFrame(_myConn, _myQueue):
                     blurryphoto += 1
                     blurlist.append(blur)
                     average = sum(blurlist)/len(blurlist)
-                    # print(average)
                     print("photo is too blurry\n")
                     continue
 
                 else:
                     blurlist.append(blur)
                     average = sum(blurlist)/len(blurlist)
-                    # print(average)
                     pass
                 
-                if len(blurlist) > 150:
+                if len(blurlist) > 60:
                     blurlist = []
 
                 detector = dlib.get_frontal_face_detector()
-                #change -1 to 1 at some point to see how it affects
-                dets1, scores, idx = detector.run(small_frame, 1, -1)
+                dets1, scores, idx = detector.run(small_frame, 1, 1)
                 dets = detector(small_frame, 1)
-                # for i, d in enumerate(dets1):
-                    # print("Detection {}, score: {}, face_type:{}".format(d, scores[i], idx[i]))
-                    # print(type(dets1))
-                # print(dets)
-                # print(len(dets))
                 if idx == []:
                     print("No face type")
                     nothingdetected += 1
                     continue
-
-                elif idx[0] != 0:
-                    facenotstraight += 1
-                    print("Face is not straight on")
-                    continue
                 
-                elif idx[0] == 0:
-                    #print("I entered the straight face loop"
-                    if len(dets) == 1:
+                else:
+                    # print(len(dets))
+                    # print(scores)
+                    if len(scores) == 1:
                         if scores[0] <= .8:
                             lowconfidence += 1
-                            # print(scores)
                             print("Our face confidence is low\n")
-                            # print(scores)
-                            # print(scores[0])
-                            #print(scores[i])
                             continue
                     
                         elif scores[0] > .8:
-                            # print(scores[0], "\n")
                             pass
-                    elif len(dets) == 2:
+                    elif len(scores) == 2:
                         if scores[0] and scores[1] <= .75:
                             lowconfidence += 1
                             print("Our face confidence is low\n")
-                            # print(scores)
-                            # print(scores[0])
-                            # print(scores[1])
-                            #print(scores[i])
                             continue
                     
                         elif scores[0] and scores[1] > .75:
-                            # print(scores[0], "\n")
                             pass
-                    elif len(dets) == 3:
+
+                    elif len(scores) == 3:
                         if scores[0] and scores[1] and scores[2] <= .6:
                             lowconfidence += 1
                             print("Our face confidence is low\n")
-                            # print(scores)
-                            # print(scores[0])
-                            # print(scores[1])
-                            # print(scores[3])
-                            #print(scores[i])
                             continue
                     
                         elif scores[0] and scores[1] and scores[2] > .6:
@@ -245,7 +222,7 @@ def processFrame(_myConn, _myQueue):
                     for face_encoding in face_encodings:
                         # See if the face is a match for the known face(s)
                         matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                        name = "Unknown"
+                        # name = "Unknown"
                         
                         #checks to see if human is in the known database
                         face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
@@ -253,8 +230,22 @@ def processFrame(_myConn, _myQueue):
                         if face_distances[best_match_index] < .48:
                             if matches[best_match_index]:
                                 name = known_face_names[best_match_index]
+                                for item in matches:
+                                    if name in known_dict:
+                                        known_dict[name] += 1
+                                    else:
+                                        known_dict[name] = 1
+
+                                
+                                # known_face_count += 1
                                 matchedface += 1
                                 print("Distance:" , face_distances[best_match_index], "from ", name)
+
+                                database1 = r"encoded_names.db"
+                                conn = create_connection(database1)
+                                cur = conn.cursor()
+                                cur.execute("UPDATE users SET count = " + str(known_dict[name]) + " WHERE name = '" + name + "';")
+                                conn.commit()
 
                         else:
                             #check to see if you are in the unknown database
@@ -280,17 +271,30 @@ def processFrame(_myConn, _myQueue):
                                     name = unknown_face_names[b_match_index]
                                     # print("You are in our unknown database")
                                     unmatchedface += 1
+                                    for item in matches:
+                                        if name in unknown_dict:
+                                            unknown_dict[name] += 1
+                                        else:
+                                            unknown_dict[name] = 1
                                     print("You are in the unknown database. Distance:" , distances[b_match_index], "from ", name)
+                                    database = r"unknown_names.db"
+                                    conn = create_connection(database)
+                                    cur = conn.cursor()
+                                    cur.execute("UPDATE users SET count = " + str(unknown_dict[name]) + " WHERE name = '" + name + "';")
+                                    conn.commit()
                                     continue
 
                             #If you arent in the unknown database it tells you and saves you here
                             else:
                                 # print("you are not in our unknown database")
-                                count +=1
-                                name = "Unknown {}".format(count)
-                                user = (name, face_encoding)
-                                sql = '''INSERT INTO users(name, encoding)
-                                        VALUES(?,?)'''
+                                savedcounter = len(unknown_face_names) +1
+                                name = "Unknown {}".format(savedcounter)
+                                x = 1
+                                # unknown_face_count += 1
+                                user = (name, face_encoding, x)
+                                unknown_dict[name] = 1
+                                sql = '''INSERT INTO users(name, encoding, count)
+                                        VALUES(?,?,?)'''
                                 cur = conn.cursor()
                                 cur.execute(sql, user)
                                 conn.commit()
@@ -302,6 +306,7 @@ def processFrame(_myConn, _myQueue):
                 else:
                     missingcount +=1
         process_this_frame = not process_this_frame
+
     postStats(frame_counter, brightness, blurryphoto, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface)
 
 
@@ -350,6 +355,7 @@ def main(_procCount = 2):
     #create a shared connection pipe for the global kill var
     parent_conn, child_conn = Pipe()
     frame_queue = Queue()
+    
 
     #create processes based on input
     startProcs(_procCount, child_conn, frame_queue)
@@ -365,4 +371,4 @@ def main(_procCount = 2):
 
 if __name__ == '__main__':
     #process count argument (defaults to 2)
-    main(4)
+    main(2)
