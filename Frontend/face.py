@@ -1,9 +1,7 @@
-# import the opencv library
 import numpy as np
 import pandas as pd
 import face_recognition
 import cv2
-import sys
 import sqlite3
 import dlib
 import cv2
@@ -12,37 +10,36 @@ from PIL import Image
 from numpy import asarray
 from numpy import array
 from autocrop import Cropper
-from multiprocessing import Process, Pipe, Queue
+from multiprocessing import Process, Queue
+from datetime import datetime, timedelta
+
 
 processes = []
 
+def startCameraFeed(_myQueue, _numProc, _myRunTime, _myDict):
 
-def startCameraFeed(_myConn, _myQueue, _numProc):
+    totalFrameCount = 0
+
     # define a video capture object
     vid = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     #keep track of frames
     frameCount = 0
-    newframecount = 0
-    while True:
-        newframecount +=1
-        #Check if its time to end the job
-        if _myConn.poll():
-            msg = _myConn.recv()
-            if msg == 'Done':
-               break
-
+    
+    while datetime.now() < _myRunTime:
         # Capture the video frame
         # by frame
         ret, frame = vid.read()
+
+        totalFrameCount += 1
     
         # Display the resulting frame
         cv2.imshow('frame', frame)
 
-        #save frame to the queue once every 30 frames
+        #save frame to the queue once every 60 / proc frames
         if(frameCount == 0):
             _myQueue.put(frame)
             frameCount += 1
-        elif frameCount < 30:
+        elif(frameCount < 10):
             frameCount += 1
         else:
             frameCount = 0
@@ -52,46 +49,49 @@ def startCameraFeed(_myConn, _myQueue, _numProc):
         # desired button of your choice
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-    postStats1(newframecount)
+    
     # After the loop release the cap object
     vid.release()
     # Destroy all the windows
     cv2.destroyAllWindows()
 
+    while not _myQueue.empty():
+        _myQueue.get()
+    time.sleep(5)
 
-def processFrame(_myConn, _myQueue):
-    global face_names, kill, newframecount, frame_counter, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface, brightness, blurryphoto
-    count = 0
-    frame_counter = 0
-    facenotstraight = 0
-    lowconfidence = 0
-    matchedface = 0
-    unmatchedface = 0
-    savedface = 0
-    nothingdetected = 0
-    missingcount = 0
+    _myDict['cameraframecount'] = totalFrameCount
+    _myQueue.put(_myDict)
+    joinProcs(_numProc, _myQueue, _myDict)
+
+
+def processFrame(_myQueue, _myDict):
+    #stat counters
+    count_frames = 0
+    count_notstraight = 0
+    count_lowconfidence = 0
+    count_matchedface = 0
+    count_unmatchedface = 0
+    count_savedface = 0
+    count_nothingdetected = 0
+    count_missing = 0
+    count_brightness = 0
+    count_blur = 0
+
+    #for adaptive blur check (not stats)
+    count_blurAVG = 0
+
+    process_this_frame = True
+    elem = None
+
     face_locations = []
     face_encodings = []
     face_names = []
     blurlist = []
-    known_face_count = 0
-    brightness = 0
-    blurcount = 0
-    blurryphoto = 0
-    process_this_frame = True
-    unknown_face_count = 0
+
     known_dict = {}
     unknown_dict = {}
 
-    def create_connection(encoded_names):
-        conn = None
-        try:
-            conn = sqlite3.connect(encoded_names)
-        except:
-            print("error")
-
-        return conn
-
+    #connect to DB & fetch rows
     database = r"encoded_names.db"
     conn = create_connection(database)
     cur = conn.cursor()
@@ -103,49 +103,53 @@ def processFrame(_myConn, _myQueue):
     for row in rows:
         known_face_names.append(row[1])
         known_face_encodings.append(np.frombuffer(row[2], np.float64))
-        known_face_count = 0
-
-
-    while True:
-        #Check if its time to end the job
-        if _myConn.poll():
-            msg = _myConn.recv()
-            if msg == 'Done':
-               break
         
-        #Check if the queue has a frame to process, otherwize sleep for a bit
+    while True:
+        #Check if the queue has a frame to process or dictionary to write to, otherwise sleep for a bit
         if not _myQueue.empty():
-            frame = _myQueue.get()
+            elem = _myQueue.get()
+            if type(elem) == type(_myDict):
+                _myDict['framecount'] += count_frames
+                _myDict['brightness'] += count_brightness
+                _myDict['blurr'] += count_blur
+                _myDict['nodetection'] += count_nothingdetected
+                _myDict['notstraight'] += count_notstraight
+                _myDict['lowconfidence'] += count_lowconfidence
+                _myDict['matchedfaces'] += count_matchedface
+                _myDict['unmatchedfaces'] += count_unmatchedface
+                _myDict['missingcount'] += count_missing
+                _myDict['savedfaces'] += count_savedface
+                break
+            else:
+                pass
         else:
-            time.sleep(0.05)
+            time.sleep(0.1)
             continue
 
-
-        small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
+        small_frame = cv2.resize(elem, (0, 0), fx=1, fy=1)
         rgb_small_frame = small_frame[:, :, ::-1]
         convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2GRAY)
-        
 
         if process_this_frame:
-            frame_counter += 1
+            count_frames += 1
             convert = cv2.cvtColor(small_frame, cv2.COLOR_RGB2HLS)
             value = convert[:,:,1]
             value1 = cv2.mean(value)[0]
 
             #Brightness check
             if value1 < 50:
-                brightness += 1
+                count_brightness += 1
                 print("Too Dark\n")
                 continue
             elif value1 > 200:
-                brightness += 1
+                count_brightness += 1
                 print("Too Bright\n")
                 continue
             
             #blur check
             blur = cv2.Laplacian(small_frame, cv2.CV_64F).var()
-            if blurcount == 0:
-                blurcount += 1
+            if count_blurAVG == 0:
+                count_blurAVG += 1
                 blurlist.append(blur)
                 average = sum(blurlist)/len(blurlist)
                 continue
@@ -153,7 +157,7 @@ def processFrame(_myConn, _myQueue):
             else:
 
                 if blur < (average-50):
-                    blurryphoto += 1
+                    count_blur += 1
                     blurlist.append(blur)
                     average = sum(blurlist)/len(blurlist)
                     print("photo is too blurry\n")
@@ -168,48 +172,48 @@ def processFrame(_myConn, _myQueue):
                     blurlist = []
 
                 detector = dlib.get_frontal_face_detector()
-                dets1, scores, idx = detector.run(small_frame, 1,-1)
+                dets1, scores, idx = detector.run(small_frame, 1, 1)
                 dets = detector(small_frame, 1)
-                # if idx == []:
-                #     print("No face type")
-                #     nothingdetected += 1
-                #     continue
+                if idx == []:
+                    print("No face type")
+                    count_nothingdetected += 1
+                    continue
                 
-                # else:
-                #     # print(len(dets))
-                #     # print(scores)
-                #     if len(dets) == 1:
-                #         if scores[0] <= .8:
-                #             lowconfidence += 1
-                #             print("Our face confidence is low\n")
-                #             continue
+                else:
+                    # print(len(dets))
+                    # print(scores)
+                    if len(scores) == 1:
+                        if scores[0] <= .8:
+                            count_lowconfidence += 1
+                            print("Our face confidence is low\n")
+                            continue
                     
-                #         elif scores[0] > .8:
-                #             pass
-                #     elif len(dets) == 2:
-                #         if scores[0] and scores[1] <= .75:
-                #             lowconfidence += 1
-                #             print("Our face confidence is low\n")
-                #             continue
+                        elif scores[0] > .8:
+                            pass
+                    elif len(scores) == 2:
+                        if scores[0] and scores[1] <= .75:
+                            count_lowconfidence += 1
+                            print("Our face confidence is low\n")
+                            continue
                     
-                #         elif scores[0] and scores[1] > .75:
-                #             pass
+                        elif scores[0] and scores[1] > .75:
+                            pass
 
-                #     elif len(dets) == 3:
-                #         if scores[0] and scores[1] and scores[2] <= .6:
-                #             lowconfidence += 1
-                #             print("Our face confidence is low\n")
-                #             continue
+                    elif len(scores) == 3:
+                        if scores[0] and scores[1] and scores[2] <= .6:
+                            count_lowconfidence += 1
+                            print("Our face confidence is low\n")
+                            continue
                     
-                #         elif scores[0] and scores[1] and scores[2] > .6:
-                #             # print(scores[0], "\n")
-                #             pass
-                #     elif len(dets) == 0:
-                #         continue
+                        elif scores[0] and scores[1] and scores[2] > .6:
+                            # print(scores[0], "\n")
+                            pass
+                    elif len(dets) == 0:
+                        continue
 
-                #     else:
-                #         print("There are more than 3 faces in the frame")
-                #         continue
+                    else:
+                        print("There are more than 3 faces in the frame")
+                        continue
 
                 face_locations = face_recognition.face_locations(rgb_small_frame)
                 # print(face_locations)
@@ -217,12 +221,10 @@ def processFrame(_myConn, _myQueue):
                 # print(face_encodings)
                 if face_encodings:
                     
-                    
                     face_names = []
                     for face_encoding in face_encodings:
                         # See if the face is a match for the known face(s)
                         matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                        # name = "Unknown"
                         
                         #checks to see if human is in the known database
                         face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
@@ -236,9 +238,7 @@ def processFrame(_myConn, _myQueue):
                                     else:
                                         known_dict[name] = 1
 
-                                
-                                # known_face_count += 1
-                                matchedface += 1
+                                count_matchedface += 1
                                 print("Distance:" , face_distances[best_match_index], "from ", name)
 
                                 database1 = r"encoded_names.db"
@@ -260,7 +260,6 @@ def processFrame(_myConn, _myQueue):
                             for row in rows:
                                 unknown_face_names.append(row[1])
                                 unknown_face_encodings.append(np.frombuffer(row[2], np.float64))
-                            # print("Got data from unknown database")
 
                             #actual face check for unknown database
                             face_matches = face_recognition.compare_faces(unknown_face_encodings, face_encoding)
@@ -269,8 +268,7 @@ def processFrame(_myConn, _myQueue):
                             if distances[b_match_index] < .53:
                                 if face_matches[b_match_index]:
                                     name = unknown_face_names[b_match_index]
-                                    # print("You are in our unknown database")
-                                    unmatchedface += 1
+                                    count_unmatchedface += 1
                                     for item in matches:
                                         if name in unknown_dict:
                                             unknown_dict[name] += 1
@@ -286,11 +284,9 @@ def processFrame(_myConn, _myQueue):
 
                             #If you arent in the unknown database it tells you and saves you here
                             else:
-                                # print("you are not in our unknown database")
                                 savedcounter = len(unknown_face_names) +1
                                 name = "Unknown {}".format(savedcounter)
                                 x = 1
-                                # unknown_face_count += 1
                                 user = (name, face_encoding, x)
                                 unknown_dict[name] = 1
                                 sql = '''INSERT INTO users(name, encoding, count)
@@ -299,76 +295,110 @@ def processFrame(_myConn, _myQueue):
                                 cur.execute(sql, user)
                                 conn.commit()
                                 cv2.imwrite('unknown_face.jpg', small_frame)
-                                savedface += 1
+                                count_savedface += 1
                                 print("You were not in the unknown database, but I have added you to it\n")
 
                         face_names.append(name)
                 else:
-                    missingcount +=1
+                    count_missing +=1
         process_this_frame = not process_this_frame
 
-    postStats(frame_counter, brightness, blurryphoto, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface)
+    # postStats(_myDict)
 
 
-def startProcs(_count, _childConn, _queue):
+def startProcs(_count, _queue, _dict, _time):
     #proc 0 is always camera proc
-    processes.append(Process(target=startCameraFeed, args=(_childConn, _queue, _count)))
+    processes.append(Process(target=startCameraFeed, args=(_queue, _count, _time, _dict)))
     processes[0].start()
     print(str(processes[0].pid) + ' has started. (camera)')
 
     for proc in range(1, _count):
-        processes.append(Process(target=processFrame, args=(_childConn, _queue)))
+        processes.append(Process(target=processFrame, args=(_queue, _dict)))
         processes[proc].start()
         print(str(processes[proc].pid) + ' has started. (processing)')
 
 
 
-def joinProcs(_count, _parentConn):
-    #join all known threads
-    for proc in range(0, _count):
-            #send message to all child processes to end process loops.
-        _parentConn.send('Done')
-        print(str(processes[proc].pid) + ' has joined.')
+def joinProcs(_count, _frameQueue, _dict):
+    print('compiling stats...')
+    # time.sleep(4)
+
+    #join all proc threads
+    for proc in range(1, (_count-1)):
+        # print(proc)
+        # print(_count)
+        #send message to all child processes to end process loops.
+        # print(str(processes[proc].pid) + ' has joined.')
         processes[proc].join(timeout=1)
+    
+    _dict = _frameQueue.get()
+    postStats(_dict)
 
 
-def postStats(frame_counter, brightness, blurryphoto, nothingdetected, facenotstraight, lowconfidence, matchedface, unmatchedface, missingcount, savedface):
-    print("Number of frames captured:", frame_counter)
-    print("Number of brightness issue photos filtered out", brightness)
-    print("Number of blur issue photos filtered out", blurryphoto)
-    print("Number of photos where no faces are detected", nothingdetected)
-    print("Number of not straight faces filtered out:", facenotstraight)
-    print("Number of low confidence faces filtered out:", lowconfidence)
-    print("Number of matched faces:", matchedface)
-    print("Number of matched unknown faces:", unmatchedface)
-    print("Here are the frames were missing:", missingcount)
-    print("Number of saved faces (should be at most # of ppl in frame)", savedface)
+def postStats(_dict):
+    #format and print stats
+    print('\n======================================================\n' + 
+           'Number of frames captured in camera thread: ' + str(_dict['cameraframecount']) + '\n' +
+           'Number of frames captured: ' + str(_dict['framecount']) + '\n' +
+           'Number of brightness issue photos filtered out: ' + str(_dict['brightness']) + '\n' +
+           'Number of blur issue photos filtered out: ' + str(_dict['blurr']) + '\n' +
+           'Number of photos where no faces are detected: ' + str(_dict['nodetection']) + '\n' +
+           'Number of not straight faces filtered out: ' + str(_dict['notstraight']) + '\n' +
+           'Number of low confidence faces filtered out: ' + str(_dict['lowconfidence']) + '\n' +
+           'Number of matched faces: ' + str(_dict['matchedfaces']) + '\n' +
+           'Number of matched unknown faces: ' + str(_dict['unmatchedfaces']) + '\n' +
+           'Here are the frames were missing: ' + str(_dict['missingcount']) + '\n' +
+           'Number of saved faces (should be at most # of ppl in frame): ' + str(_dict['savedfaces']) +
+          '\n======================================================\n')
+    
 
-def postStats1(newframecount):
-    print("Number of frames captured in camera thread:", newframecount)
+#attempt to establish DB connection
+def create_connection(encoded_names):
+    conn = None
+    try:
+        conn = sqlite3.connect(encoded_names)
+    except:
+        print("error connecting to DB")
+
+    return conn
 
 
-def main(_procCount = 2):
+def main(_procCount = 2, _runTime = 30):
     if _procCount < 2:
         _procCount = 2
-
-    #create a shared connection pipe for the global kill var
-    parent_conn, child_conn = Pipe()
-    frame_queue = Queue()
+    if _runTime < 30:
+        _runTime = 20
     
+    #create a shared connection pipe for the global kill var
+    frame_queue = Queue()
+
+    #create a time delta
+    end_time = datetime.now() + timedelta(seconds=_runTime)
+
+    #create a dict for stats
+    glob_dict = {
+    'cameraframecount': 0,
+    'framecount': 0,
+    'brightness': 0,
+    'blurr': 0,
+    'nodetection': 0,
+    'notstraight': 0,
+    'lowconfidence': 0,
+    'matchedfaces': 0,
+    'unmatchedfaces': 0,
+    'missingcount': 0,
+    'savedfaces': 0
+    }
 
     #create processes based on input
-    startProcs(_procCount, child_conn, frame_queue)
+    startProcs(_procCount, frame_queue, glob_dict, end_time)
 
     #stop processing on user input
-    input('press any key to post stats. \n')
-    joinProcs(_procCount, parent_conn)
-    # postStats()
+    # input('press any key to force quit & post stats. \n')
+    # joinProcs(_procCount, frame_queue, glob_dict)
+    # input('press any key to quit')
 
-
-    # input('press any key to quit... \n')
-    
 
 if __name__ == '__main__':
-    #process count argument (defaults to 2)
-    main(2)
+    #process count argument (defaults to 2), Time argument (defaults to 30)
+    main(4, 20)
